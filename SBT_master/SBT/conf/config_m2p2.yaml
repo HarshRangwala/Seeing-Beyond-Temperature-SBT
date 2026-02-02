@@ -1,0 +1,131 @@
+# Training parameters
+train_params:
+  experiment_name: ssl-ptr_aug-thermal_lidar_video_training_5
+  epochs: 800
+  device: cuda:0 # device name, values: "cpu" or "cuda:x" where 'x' is gpu index, or "cuda:a" to use all GPUs
+  optimizer: adamw
+  save_every: 50
+  grad_clipping: 1.0 # set to zero to disable grad clipping
+  start_saving_best: 50 # start epoch of saving best model
+  resume: True
+  plot_every: 25 # Plot losses every N epochs
+  vis_every: 100
+  cycle_length: 10 # Number of epochs in a complete cycle (M2P2 + decoder)
+  bt_start: None
+
+# Dataloader parameters
+dataloader:
+  num_workers: 10 # Allowing multi-processing
+  batch_size: 64
+  shuffle: True # whether to shuffle data or not
+  pin_memory: True # use pageable memory or pinned memory
+  drop_last: True
+
+
+# Train dataset parameters
+dataset:
+  root: /mnt/sbackup/Server_3/harshr/burk_lake_additional # where data resides
+  seed: 42 # random seed for random transformations
+  stats: /mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/DataProcessingPipeline/imu_stats_full_data.pkl  # stats file
+  frequency_rate: 200 # this is IMU frequency rate
+  resize:
+    - 256
+    - 256
+  
+trav_dataset:
+  root: /home/harshr/NV_cahsor/data/traversability # where data resides
+  seed: 42 # random seed for random transformations
+  resize:
+    - 256
+    - 256
+
+# Model parameters
+model:
+  projection_dim: 2048
+  rep_size: 2048
+  num_layers_enc: 50
+  pretrained: True
+  l1_coeff: 0.5 # trade-off between two losses
+
+# Scheduler parameters (for both M2P2 and decoder)
+scheduler_params: 
+  scheduler: CosineAnnealingLR
+  T_max: 800 # number of epochs
+  eta_min: 1e-5 # minimum learning rate
+
+# Weight initialization parameters
+init_weights:
+  method: "kaiming_normal"
+
+# Logger parameters
+logger:
+  workspace: harshrangwala # workspace name
+  project: ssl-final_train-thermal_lidar_video_4 # project name
+  experiment_name: vssl-2_aug_b0 # name of the experiment
+  tags: "PRETRAINING RESUME"
+  resume: False # (boolean) whether to resume training or not
+  online: True # (boolean) whether to store logs online or not
+  experiment_key: "mqJkyVqrHSBGEt2wkbMP7wWQP" # can be retrieved from logger dashboard, available if only resuming
+  api_key: "mqJkyVqrHSBGEt2wkbMP7wWQP"
+  offline_directory: ./logs # where to store log data
+  disabled: False # disable the comet ml
+  upload_model: False # upload the model to CometML
+  log_env_details: False # log virtual environment details
+  auto_histogram_weight_logging: True # allows you to enable/disable histogram logging for biases and weights
+  auto_histogram_gradient_logging: True # allows you to enable/disable automatic histogram logging of gradients
+  auto_histogram_activation_logging: True # allows you to enable/disable automatic histogram logging of activations
+
+# Directories
+directory:
+  model_name: "Tron" # file name for saved model
+  save: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/ssl-ptr_aug-thermal_lidar_video_3"
+  load: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/ssl-ptr_aug-thermal_lidar_video_3/ssl-ptr_aug-thermal_lidar_video_training_5-2048-05-07-00-58/ssl-ptr_aug-thermal_lidar_video_training_5-2048-05-07-00-58_500.pth"
+  save_loss_plot: ./loss_plots/
+
+# AdamW parameters for M2P2 model
+adamw:
+  lr: 5e-4
+  betas:
+    - 0.9
+    - 0.999
+  eps: 1e-8
+  weight_decay: 2e-5
+  amsgrad: True
+
+depth_decoder_adamw:
+  lr: 1e-4
+  betas:
+    - 0.9
+    - 0.999
+  eps: 1e-8
+  weight_decay: 3e-5 
+  amsgrad: True
+
+# RMSprop parameters if using RMSprop optimizer
+rmsprop:
+  lr: 1e-3
+  momentum: 0
+  alpha: 0.99
+  eps: 1e-8
+  centered: False
+  weight_decay: 0
+
+# SGD parameters if using SGD optimizer
+sgd:
+  lr: 1e-3
+  momentum: 0 # momentum factor
+  weight_decay: 0 # weight decay (L2 penalty)
+  dampening: 0 # dampening for momentum
+  nesterov: False # enables Nesterov momentum
+
+# Depth model parameters
+depth_decoder:
+  latent_size: 2048 # Should match model.rep_size
+  use_skip_connections: True
+  dropout_rate: 0.1
+  use_attention: False
+
+# Loss parameters
+loss:
+  depth_loss_scale: 1.0
+  edge_aware_weight: 0.1

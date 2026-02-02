@@ -1,0 +1,61 @@
+# config_bc.yaml
+# Logger parameters
+logger:
+  workspace: harshrangwala # workspace name
+  project: ssl-thermal_lidar-downstream-task4 # project name
+  experiment_name: BCtask_B1 # name of the experiment
+  tags: "PRETRAINING"
+  resume: False # (boolean) whether to resume training or not
+  online: True # (boolean) whether to store logs online or not
+  experiment_key: "mqJkyVqrHSBGEt2wkbMP7wWQP" # can be retrieved from logger dashboard, available if only resuming
+  api_key: "mqJkyVqrHSBGEt2wkbMP7wWQP"
+  offline_directory: ./logs # where to store log data
+  disabled: False # disable the comet ml
+  upload_model: False # upload the model to CometML
+  log_env_details: False # log virtual environment details
+  auto_histogram_weight_logging: True # allows you to enable/disable histogram logging for biases and weights
+  auto_histogram_gradient_logging: True # allows you to enable/disable automatic histogram logging of gradients
+  auto_histogram_activation_logging: True # allows you to enable/disable automatic histogram logging of activations
+
+directory:
+  model_name: null  # Will be auto-generated in the code
+  save: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/behavioral_clonning_ckpts"
+  pretrained_path: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/ssl-ptr-thermal_lidar_imu_aug-2048-04-13-17-45/ssl-ptr-thermal_lidar_imu_aug-2048-04-15-01-05/ssl-ptr-thermal_lidar_imu_aug-2048-04-15-01-05_500.pth" 
+  load_decoder: null  # Set this path to resume training from a checkpoint
+
+train_params:
+  experiment_name: "bc_model"
+  device: cuda:0
+  optimizer: "adamw"
+  epochs: 100
+  save_every: 50
+  resume_bc: false
+
+bc_model_adamw:
+  lr: 2e-4
+  betas: [0.9, 0.999]
+  weight_decay: 1e-5
+  # amsgrad: True
+
+scheduler_params:
+  scheduler: CosineAnnealingLR
+  T_max: 100
+  eta_min: 1e-5
+
+model:
+  rep_size: 2048
+  num_layers_enc: 50
+
+dataset:
+  root: "/mnt/sbackup/Server_3/harshr/m2p2_data/"
+  stats: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/DataProcessingPipeline/BC_dt4_stats.pkl"
+  resize: [256, 256]
+  seed: 42
+
+dataloader:
+  batch_size: 64
+  num_workers: 8
+
+init_weights:
+  method: "kaiming_normal"
+

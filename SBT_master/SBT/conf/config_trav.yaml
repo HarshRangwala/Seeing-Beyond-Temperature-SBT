@@ -1,0 +1,95 @@
+# config_trav.yaml
+# Main configuration for traversability decoder training
+
+# Logger parameters
+logger:
+  workspace: harshrangwala # workspace name
+  project: traversability_end2end # project name
+  experiment_name: e2e-trav_D1.0 # name of the experiment
+  tags: "Traversability E2E"
+  resume: False # (boolean) whether to resume training or not
+  online: True # (boolean) whether to store logs online or not
+  experiment_key: "mqJkyVqrHSBGEt2wkbMP7wWQP" # can be retrieved from logger dashboard, available if only resuming
+  api_key: "mqJkyVqrHSBGEt2wkbMP7wWQP"
+  offline_directory: ./logs # where to store log data
+  disabled: False # disable the comet ml
+  upload_model: False # upload the model to CometML
+  log_env_details: False # log virtual environment details
+  auto_histogram_weight_logging: True # allows you to enable/disable histogram logging for biases and weights
+  auto_histogram_gradient_logging: True # allows you to enable/disable automatic histogram logging of gradients
+  auto_histogram_activation_logging: True # allows you to enable/disable automatic histogram logging of activations
+
+# Directory settings
+directory:
+  model_name: null  # Will be auto-generated in the code
+  save: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/Apr28_1723"
+  pretrained_path: "/mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/ssl-ptr_aug-thermal_lidar-2048-04-13-14-42/ssl-ptr_aug-thermal_lidar-2048-04-15-14-31/ssl-ptr_aug-thermal_lidar-2048-04-15-14-31_500.pth"  # Path to pretrained model
+  resume_traversability_decoder_path: null # /mnt/sbackup/Server_3/harshr/home/NV_cahsor/CAHSOR-master/TRON/checkpoint/tron/decoder_trav_thermal_lidar_imu_elev_ckpts/decoder_traversability-trav-2048-04-23-13-25/best_traversability_model.pth
+  test_output: /mnt/sbackup/Server_3/harshr/trav_test/test_output/WC10_55
+# Model architecture parameters
+model:
+  rep_size: 2048  # Representation size (latent dimension)
+  num_layers_enc: 50  # Number of layers in encoder/decoder
+
+# Training parameters
+train_params:
+  experiment_name: trav_e2e  # Will be auto-generated in the code
+  epochs: 50
+  device: cuda:0
+  grad_clipping: 1.0
+  save_every: 50  # Save checkpoint every N epochs
+  optimizer: "adamw"  # Options: adamw, rmsprop, sgd
+  resume_decoder: False
+  early_stop_patience: 15
+  early_stop_delta: 0.0005
+
+test_params:
+  batch_size: 8  
+  save_individual_images: False 
+
+# Weight initialization parameters
+init_weights:
+  method: "kaiming_normal"
+
+traversability_loss_weights:
+  bce: 1.0                            
+  dice: 1.0 
+
+# Optimizer configurations
+trav_decoder_adamw:
+  lr: 2e-4
+  eps: 1e-8
+  betas: [0.9, 0.999]
+  weight_decay: 3e-5 
+  amsgrad: True
+
+rmsprop:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  momentum: 0.9
+
+sgd:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  momentum: 0.9
+
+  # Scheduler parameters
+scheduler:
+  final_lr: 1.0e-6
+
+# Dataset parameters
+dataset:
+  root: /mnt/sbackup/Server_3/harshr/trav_test # where data resides
+  seed: 42 # random seed for random transformations
+  resize:
+    - 256
+    - 256
+
+# DataLoader parameters
+dataloader:
+  batch_size: 64
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
+  drop_last: true
+

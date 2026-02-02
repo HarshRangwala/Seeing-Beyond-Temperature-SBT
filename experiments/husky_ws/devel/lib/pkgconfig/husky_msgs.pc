@@ -1,0 +1,8 @@
+prefix=/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/devel
+
+Name: husky_msgs
+Description: Description of husky_msgs
+Version: 0.6.10
+Cflags: -I/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/devel/include
+Libs: -L${prefix}/lib 
+Requires: std_msgs message_runtime

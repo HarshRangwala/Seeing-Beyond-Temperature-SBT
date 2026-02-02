@@ -1,0 +1,8 @@
+# CMake generated Testfile for 
+# Source directory: /mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/src/husky/husky_navigation
+# Build directory: /mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/build/husky/husky_navigation
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test(_ctest_husky_navigation_roslaunch-check_launch "/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/build/catkin_generated/env_cached.sh" "/home/robotixx/anaconda3/envs/nvcahsor_nightly/bin/python" "/opt/ros/noetic/share/catkin/cmake/test/run_tests.py" "/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/build/test_results/husky_navigation/roslaunch-check_launch.xml" "--return-code" "/usr/bin/cmake -E make_directory /mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/build/test_results/husky_navigation" "/opt/ros/noetic/share/roslaunch/cmake/../scripts/roslaunch-check -o \"/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/build/test_results/husky_navigation/roslaunch-check_launch.xml\" \"/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/src/husky/husky_navigation/launch\" ")
+set_tests_properties(_ctest_husky_navigation_roslaunch-check_launch PROPERTIES  _BACKTRACE_TRIPLES "/opt/ros/noetic/share/catkin/cmake/test/tests.cmake;160;add_test;/opt/ros/noetic/share/roslaunch/cmake/roslaunch-extras.cmake;66;catkin_run_tests_target;/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/src/husky/husky_navigation/CMakeLists.txt;10;roslaunch_add_file_check;/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/src/husky/husky_navigation/CMakeLists.txt;0;")

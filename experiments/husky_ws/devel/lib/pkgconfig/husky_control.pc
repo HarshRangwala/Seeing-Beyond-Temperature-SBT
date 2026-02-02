@@ -1,0 +1,8 @@
+prefix=/mnt/sbackup/Server_3/harshr/sbt_depth_experiments/husky_ws/devel
+
+Name: husky_control
+Description: Description of husky_control
+Version: 0.6.10
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

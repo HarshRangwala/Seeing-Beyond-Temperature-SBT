@@ -1,0 +1,18 @@
+# User specified ignores
+future-pose-projection-main/data/
+cv_bridge_ws/
+work_reviews/
+SBT_NV.zip
+
+# Common Python ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+*.bag
+*.pkl

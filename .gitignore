@@ -1,6 +1,7 @@
 # User specified ignores
 future-pose-projection-main/data/
 cv_bridge_ws/
+experiments/
 work_reviews/
 SBT_NV.zip
 

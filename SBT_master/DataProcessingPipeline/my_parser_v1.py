@@ -14,6 +14,9 @@ from geometry_msgs.msg import TwistStamped # Needed if cmd_vel is TwistStamped
 from std_msgs.msg import Float32MultiArray # Assuming /status might be this, adjust if not
 # --- Imports needed for Elevation ---
 from grid_map_msgs.msg import GridMap
+# --- Imports for Elevation Mapping Cupy ---
+from scipy.spatial.transform import Rotation as R
+from elevation_mapping_cupy import ElevationMap, Parameter
 # --- Matplotlib setup for non-interactive backend ---
 import matplotlib
 matplotlib.use('Agg') # <<< IMPORTANT: Set backend BEFORE importing pyplot
@@ -26,14 +29,7 @@ from termcolor import cprint
 import Helpers.depth_utiles as image_processing
 from Helpers.sensor_fusion import imu_processor
 from Helpers.data_calculation import DataCollection
-from Helpers.traversability_helpers import extract_poses_from_path, process_traversability_single, to_robot_numpy, quaternion_to_angle, yaw_from_quaternion
-from scipy.spatial.transform import Rotation as R
-from geometry_msgs.msg import Quaternion
-
-# Elevation Mapping Cupy Imports
-from elevation_mapping_cupy import ElevationMap, Parameter
-import elevation_mapping_cupy
-
+from Helpers.traversability_helpers import extract_poses_from_path, process_traversability_single
 
 import threading
 import ros_numpy
@@ -67,9 +63,6 @@ class ListenRecordData:
         self.velocity_msgs = np.zeros((5, 2), dtype=np.float32)
         self.cmd_vel_history = np.zeros((10,2), dtype=np.float32)
         self.roll_pitch_yaw = np.zeros((400, 3), dtype=np.float32)
-        
-        self.last_imu_time = None # New for dt calc
-
 
         # Latest messages holders (from Script1, RGB removed)
         self.cmd_vel = None
@@ -113,6 +106,21 @@ class ListenRecordData:
         self.roi_offset_x = -70  # Offset from the center in x-direction (positive moves ROI forward)
         self.roi_offset_y = 0
 
+        # --- Elevation Mapping Cupy Configuration ---
+        self.T_base_lidar = np.eye(4)
+        self.T_base_lidar[:3, 3] = [0.240, 0.000, 0.476]  # Lidar position relative to base
+        
+        # BEV Grid Config (matching reference code)
+        self.grid_size = 100
+        self.grid_res = 0.1
+        self.map_length = 20.0
+        self.max_canopy_height = 2.0  # Filter points above this height (relative to robot)
+        
+        # DLIO Odom Storage for efficient lookup
+        self.all_odom_data = []  # sorted list of dicts
+        self.odom_timestamps = np.array([])  # for fast search
+        self.elevation_map = None  # Will be initialized in setup
+
         # Aggregated data dictionary (Script1 MINUS RGB)
         self.msg_data = {
             'thermal_msg': [],
@@ -135,38 +143,23 @@ class ListenRecordData:
         self.bridge = CvBridge()
         self.cam_info_msg = None
         self.k_matrix_orig = None
-        self.d_matrix = None # Prepare for caching
         self.original_shape_orig = None
-        self.undistort_map1 = None # Cache map1
-        self.undistort_map2 = None # Cache map2
 
+        # Setup elevation mapping cupy before processing bag
+        self.setup_elevation_mapping()
+        
+        # Pre-process bag for DLIO odom (first pass)
+        self.preprocess_odom(bag_path)
+        
         self.process_bag(bag_path)
         self.elevation_data_raw.sort(key=lambda x: x['timestamp'])
         rospy.loginfo(f"[{self.bag_name_prefix}] Collected {len(self.thermal_data_raw)} raw thermal messages.")
         rospy.loginfo(f"[{self.bag_name_prefix}] Collected {len(self.elevation_data_raw)} raw elevation messages.")
 
-         # New Elevation Config
-        self.grid_size = 100 
-        self.grid_res = 0.1
-        self.map_length = 20.0 
-        self.max_canopy_height = 2.0
-        self.T_base_lidar = np.eye(4)
-        self.T_base_lidar[:3, 3] = [0.240, 0.000, 0.476]
-
-        self.odom_timestamps_list = [] # List for bisect
-        self.all_odom_data = [] # Store raw odom for search
-        
-        # Traversability Config
-        self.robot_width = 0.6
-        self.robot_length = 1.0
-        self.traversability_horizon = 6.0 
-
-        self.setup_elevation_mapping()
-
-
     def setup_elevation_mapping(self):
+        """Initialize elevation_mapping_cupy with parameters."""
         try:
-            # Hardcoded paths as per user request/environment
+            # Config file paths for elevation mapping cupy
             weight_file = "/home/robotixx/elevation_ws/src/elevation_mapping_cupy/elevation_mapping_cupy/config/core/weights.dat"
             plugin_config_file = "/home/robotixx/elevation_ws/src/elevation_mapping_cupy/elevation_mapping_cupy/config/core/plugin_config.yaml"
             
@@ -186,27 +179,62 @@ class ListenRecordData:
             cprint(f"[{self.bag_name_prefix}] Elevation Mapping Cupy Initialized.", 'green')
             
         except Exception as e:
-            cprint(f"Failed to init Elevation Mapping: {e}", 'red')
-            # exit(1) # Don't exit, just warn? actually user said rely on it so maybe critical.
+            cprint(f"[{self.bag_name_prefix}] Failed to init Elevation Mapping: {e}", 'red')
+            traceback.print_exc()
+            self.elevation_map = None
+
+    def preprocess_odom(self, bag_path):
+        """Pass 1: Read all DLIO odometry for efficient future lookup and 3D pose."""
+        cprint(f"[{self.bag_name_prefix}] Pass 1: Pre-scanning DLIO Odometry...", 'yellow')
+        try:
+            bag = rosbag.Bag(bag_path)
+        except rosbag.bag.BagException as e:
+            rospy.logerr(f"Error opening bag file {bag_path}: {e}")
+            return
+            
+        odom_topic = '/dlio/odom_node/odom'
+        
+        self.all_odom_data = []
+        
+        for topic, msg, t in bag.read_messages(topics=[odom_topic]):
+            p = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            self.all_odom_data.append({
+                'ts': msg.header.stamp.to_sec(),
+                'x': p.x, 'y': p.y, 'z': p.z,
+                'qx': q.x, 'qy': q.y, 'qz': q.z, 'qw': q.w
+            })
+            
+        bag.close()
+        
+        # Sort just in case
+        self.all_odom_data.sort(key=lambda x: x['ts'])
+        self.odom_timestamps = np.array([x['ts'] for x in self.all_odom_data])
+        cprint(f"[{self.bag_name_prefix}] Loaded {len(self.all_odom_data)} DLIO odom messages.", 'green')
 
     def get_odom_at_time(self, ts):
-        """Find closest odom (efficient sorted search)."""
-        import bisect
-        if not self.all_odom_data: return None
+        """Find closest DLIO odom (efficient sorted search)."""
+        if not self.all_odom_data: 
+            return None
         
-        idx = bisect.bisect_left(self.odom_timestamps_list, ts)
-        
+        idx = np.searchsorted(self.odom_timestamps, ts)
         candidates = []
-        if idx < len(self.all_odom_data): candidates.append(idx)
-        if idx > 0: candidates.append(idx - 1)
+        if idx < len(self.all_odom_data): 
+            candidates.append(idx)
+        if idx > 0: 
+            candidates.append(idx - 1)
         
-        if not candidates: return None
+        if not candidates: 
+            return None
         
         best_idx = min(candidates, key=lambda i: abs(self.all_odom_data[i]['ts'] - ts))
         return self.all_odom_data[best_idx]
 
-
     def update_elevation_map(self, lidar_points, timestamp):
+        """Update elevation map with LiDAR scan using DLIO pose."""
+        if self.elevation_map is None:
+            return
+            
         closest_odom = self.get_odom_at_time(timestamp)
         if closest_odom is None: 
             return 
@@ -215,7 +243,7 @@ class ListenRecordData:
         if dt > 0.2:
             return 
 
-        # --- 3D Pose Update ---
+        # Build rotation matrix from quaternion using scipy
         r = R.from_quat([closest_odom['qx'], closest_odom['qy'], closest_odom['qz'], closest_odom['qw']])
         
         T_odom_base = np.eye(4)
@@ -229,14 +257,15 @@ class ListenRecordData:
         map_center = t_lidar.copy()
         map_center[2] = 0.0 
         
+        # IMPORTANT: Use np.eye(3), NOT the robot rotation!
         self.elevation_map.move_to(map_center, np.eye(3))
 
-        pts_clean = np.ascontiguousarray(lidar_points.reshape(-1, 3)).astype(np.float32)
+        pts_clean = np.ascontiguousarray(lidar_points[:, :3].reshape(-1, 3)).astype(np.float32)
         dist = np.linalg.norm(pts_clean[:, :2], axis=1)
         valid_mask = (dist > 1.0) & (dist < 15.0)
         pts_clean = pts_clean[valid_mask]
         
-        # --- Canopy Filtering ---
+        # Canopy Filtering
         lidar_z_threshold = self.max_canopy_height - self.T_base_lidar[2, 3]
         height_mask = pts_clean[:, 2] < lidar_z_threshold
         pts_clean = pts_clean[height_mask]
@@ -255,9 +284,14 @@ class ListenRecordData:
         self.elevation_map.update_time()
 
     def get_synced_elevation_bev(self, target_ts):
+        """Get robot-centric BEV elevation map at the given timestamp."""
+        if self.elevation_map is None:
+            return None
+            
         try:
             closest_odom = self.get_odom_at_time(target_ts)
-            if closest_odom is None: return None
+            if closest_odom is None: 
+                return None
 
             # Get raw map data
             elev_data = self.elevation_map.get_layer("elevation")
@@ -270,12 +304,13 @@ class ListenRecordData:
             cy = map_n / 2.0
             
             # Use Helper: yaw_from_quaternion
+            from Helpers.traversability_helpers import yaw_from_quaternion
             ryaw = yaw_from_quaternion(closest_odom['qx'], closest_odom['qy'], closest_odom['qz'], closest_odom['qw'])
             
             angle_deg = -np.degrees(ryaw) + 180 
             M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)
             
-            rotated_map = cv2.warpAffine(elev_data, M, (map_m, map_n), 
+            rotated_map = cv2.warpAffine(elev_data.astype(np.float32), M, (map_m, map_n), 
                                          flags=cv2.INTER_NEAREST, 
                                          borderMode=cv2.BORDER_CONSTANT, 
                                          borderValue=-999.0)
@@ -301,7 +336,7 @@ class ListenRecordData:
             return bev_elev.astype(np.float32)
 
         except Exception as e:
-            # traceback.print_exc()
+            traceback.print_exc()
             return None
 
 
@@ -322,10 +357,9 @@ class ListenRecordData:
             '/sensor_suite/witmotion_imu/imu',             # IMU
             '/sensor_suite/witmotion_imu/magnetometer',    # Mag
             '/status',                                     # Husky Status
-            # '/elevation_mapping/elevation_map_raw',        # **** ADDED ****
+            '/elevation_mapping/elevation_map_raw',        # **** ADDED ****
             '/dlio/odom_node/path'
         ]
-
         topics = [t for t in topics if t]
 
         total_messages = bag.get_message_count(topic_filters=topics)
@@ -343,9 +377,8 @@ class ListenRecordData:
                 elif topic == '/sensor_suite/witmotion_imu/magnetometer': self.mag_callback(msg, t)
                 elif topic == '/joy_teleop/joy': self.joy_callback(msg, t)
                 elif topic == '/status': self.status_callback(msg, t)
-                # elif topic == '/elevation_mapping/elevation_map_raw': self.elevation_map_callback(msg, t) # REMOVED
+                elif topic == '/elevation_mapping/elevation_map_raw': self.elevation_map_callback(msg, t)
                 elif topic == '/dlio/odom_node/path': self.dlio_path_callback(msg, t)
-
 
                 processed_count += 1
                 if processed_count % 1000 == 0: # Print progress every 1000 messages
@@ -358,26 +391,21 @@ class ListenRecordData:
         cprint(f"\n[{self.bag_name_prefix}] Finished reading bag.", 'green')
         bag.close()
 
-
-
     def thermal_image_callback(self, msg: CompressedImage, t):
         try:
-            
-            # ** Capture Synced Elevation BEV immediately **
-            ts = msg.header.stamp.to_sec()
-            bev_e = self.get_synced_elevation_bev(ts)
-            
-            # Attach to message object (Monkey Patch) so it persists in the aggregated list
-            msg.bev_elev = bev_e
-            
             self.thermal = msg
+            ts = msg.header.stamp.to_sec()
+            
+            # Capture elevation BEV at this moment (while map state is current)
+            bev_elev = self.get_synced_elevation_bev(ts)
+            
             self.thermal_data_raw.append({
-                'timestamp': ts, 'msg': msg 
+                'timestamp': ts, 
+                'msg': msg,
+                'elevation_bev': bev_elev  # Store BEV captured at this moment
             })
         except Exception as e:
             rospy.logerr(f"[{self.bag_name_prefix}] Error in thermal_image_callback: {e}")
-
-
 
     def lidar_callback(self, msg: PointCloud2, t):
         try:
@@ -393,8 +421,9 @@ class ListenRecordData:
             else:
                  self.lidar_points = coords
 
-            # Update Internal Elevation Map
-            self.update_elevation_map(self.lidar_points, t.to_sec())
+            # Update elevation map with this LiDAR scan
+            timestamp = msg.header.stamp.to_sec()
+            self.update_elevation_map(self.lidar_points, timestamp)
 
             if self.cam_info_msg is not None and self.thermal is not None:
                 self.process_depth_maps() # Original logic
@@ -402,54 +431,18 @@ class ListenRecordData:
             rospy.logwarn(f"[{self.bag_name_prefix}] Error in lidar_callback: {e}")
             self.lidar_points = None
 
-
     def calib_callback(self, msg: CameraInfo, t):
         self.cam_info_msg = msg
-        
-        # --- Precompute Undistortion Maps (Once) ---
-        if self.undistort_map1 is None and self.cam_info_msg is not None:
-             try:
-                K = np.array(self.cam_info_msg.K).reshape(3, 3)
-                D = np.array(self.cam_info_msg.D)
-                # Assuming raw image size is in msg or can be inferred. 
-                # If not explicitly in msg, we might need to wait for first image.
-                # Usually 1280x1024 based on previous context.
-                # Let's derive it or default it, calculating it here is most efficient.
-                h, w = 1024, 1280 # Default thermal resolution
-                if self.cam_info_msg.height > 0: h = self.cam_info_msg.height
-                if self.cam_info_msg.width > 0: w = self.cam_info_msg.width
-                
-                self.undistort_map1, self.undistort_map2 = cv2.initUndistortRectifyMap(
-                    K, D, None, K, (w, h), cv2.CV_16SC2
-                )
-             except Exception as e:
-                pass # Will retry next time
 
-        if self.imu_processor.accel is not None:
-            self.accel_msgs = np.roll(self.accel_msgs, -1, axis=0)
-            self.accel_msgs[-1] = self.imu_processor.accel
-            self.data_collection.imu_buffer.append({
-                'timestamp': t.to_sec(), 'gyro': self.gyro_msgs[-1].copy(), 'accel': self.accel_msgs[-1].copy()
-            })
-            
     def imu_callback(self, msg: Imu, t):
         try:
-            current_time = t.to_sec()
-            dt = 0.005 # Default 200Hz
-            
-            if self.last_imu_time is not None:
-                dt = current_time - self.last_imu_time
-                if dt <= 0: dt = 0.005 # Prevent zero/neg division
-                
-            self.last_imu_time = current_time
-
             if self.imu_counter <= 600:
                 self.imu_processor.beta = 0.8;
                 self.imu_counter += 1
             else:
                 self.imu_processor.beta = 0.05
 
-            self.imu_processor.imu_update(msg, dt)
+            self.imu_processor.imu_update(msg)
             self.gyro_msgs = np.roll(self.gyro_msgs, -1, axis=0)
             self.accel_msgs = np.roll(self.accel_msgs, -1, axis=0)
             self.gyro_msgs[-1] = [msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z]
@@ -459,7 +452,6 @@ class ListenRecordData:
             self.data_collection.imu_buffer.append({
                 'timestamp': t.to_sec(), 'gyro': self.gyro_msgs[-1].copy(), 'accel': self.accel_msgs[-1].copy()
             })
-
         except Exception as e:
             rospy.logwarn(f"[{self.bag_name_prefix}] Error in imu_callback: {e}")
 
@@ -523,18 +515,6 @@ class ListenRecordData:
                 'position': (pose.position.x, pose.position.y),
                 'linear_velocity' : twist.linear.x
             })
-            
-            # Store for Cupy Elevation Map
-            p = msg.pose.pose.position
-            q = msg.pose.pose.orientation
-            self.all_odom_data.append({
-                'ts': t.to_sec(),
-                'x': p.x, 'y': p.y, 'z': p.z,
-                'qx': q.x, 'qy': q.y, 'qz': q.z, 'qw': q.w
-            })
-            self.odom_timestamps_list.append(t.to_sec())
-
-
         except Exception as e:
             rospy.logwarn(f"[{self.bag_name_prefix}] Error in odom_callback: {e}")
 
@@ -553,13 +533,12 @@ class ListenRecordData:
               rospy.logwarn(f"[{self.bag_name_prefix}] Error processing /status message: {e}")
               self.husky_msg = [0.0, 0.0, 0.0, 0.0] # Reset to default
 
-    # def elevation_map_callback(self, msg: GridMap, t):
-        # try:
-        #     # Store a copy to prevent modification issues if msg is reused
-        #     self.elevation_data_raw.append({'timestamp': t.to_sec(), 'msg': (msg)})
-        # except Exception as e:
-        #      rospy.logwarn(f"[{self.bag_name_prefix}] Error in elevation_map_callback: {e}")
-
+    def elevation_map_callback(self, msg: GridMap, t):
+        try:
+            # Store a copy to prevent modification issues if msg is reused
+            self.elevation_data_raw.append({'timestamp': t.to_sec(), 'msg': (msg)})
+        except Exception as e:
+             rospy.logwarn(f"[{self.bag_name_prefix}] Error in elevation_map_callback: {e}")
 
     # --- process_depth_maps - Reverted to Original Script1 Logic ---
     def process_depth_maps(self):
@@ -571,18 +550,10 @@ class ListenRecordData:
             # thermal_tensor = torch.from_numpy(thermal_cv).float()
             # processed_thermal_tensor = image_processing.preprocess_thermal(thermal_tensor)
             # processed_thermal_numpy = (processed_thermal_tensor.numpy() * 255).astype(np.uint8)
-            # Undistort using CACHED maps if available, else standard (slow) backup
-            if self.undistort_map1 is not None and self.undistort_map2 is not None:
-                 undistorted_thermal = cv2.remap(thermal_cv, self.undistort_map1, self.undistort_map2, cv2.INTER_LINEAR)
-                 # We still need K, D for projection. Assuming they were extracted/set during map init or updated here.
-                 if self.k_matrix_orig is None:
-                     self.k_matrix_orig = np.array(self.cam_info_msg.K).reshape(3, 3)
-                     self.d_matrix = np.array(self.cam_info_msg.D)
-            else:
-                # Fallback to slow original method if maps not ready
-                undistorted_thermal, self.k_matrix_orig, self.d_matrix = image_processing.undistort_image(
-                    self.cam_info_msg, thermal_cv #processed_thermal_numpy
-                )
+            # Undistort
+            undistorted_thermal, self.k_matrix_orig, self.d_matrix = image_processing.undistort_image(
+                self.cam_info_msg, thermal_cv #processed_thermal_numpy
+            )
 
             rotation_matrix = self.transform_matrix[:3, :3]
             translation_matrix = self.transform_matrix[:3, 3]
@@ -869,31 +840,9 @@ class ListenRecordData:
             else:
                 # Save black/zero placeholders if data is missing
                  print("Data missing! ")
-
-            # --- 3. Elevation Saving (From Stored BEV attached to Thermal Msg) ---
-            thermal_msg = thermal_msgs_agg[index] # Get the synced message for this index
-            bev_elev = getattr(thermal_msg, 'bev_elev', None)
-            
-            if bev_elev is not None:
-                 # Save Raw NPY
-                 elevation_raw_npy_path = os.path.join(elevation_raw_npy_folder, f'{index}_raw.npy')
-                 np.save(elevation_raw_npy_path, bev_elev.astype(np.float32))
-                 final_data['elevation_raw_paths'][index] = elevation_raw_npy_path
-                 # final_data['elevation_timestamps'][index] = ... # No explicit TS needed if perfectly synced? or use thermal ts
-                 if thermal_msg.header:
-                     final_data['elevation_timestamps'][index] = thermal_msg.header.stamp.to_sec()
-
-                 # Save Vis Image
-                 elevation_image_path = os.path.join(elevation_image_folder, f'{index}_image.png')
-                 norm_elev = cv2.normalize(np.nan_to_num(bev_elev), None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                 # Resize to 256x256 if needed. BEV is 100x100 (grid_size). 
-                 resized_elev = cv2.resize(norm_elev, (256, 256), interpolation=cv2.INTER_NEAREST)
-                 cv2.imwrite(elevation_image_path, resized_elev)
-                 final_data['elevation_image_paths'][index] = elevation_image_path
-
-            
+        print(depth_img.shape, "DEPTH SHAPE") 
         cprint(f"[{just_the_name}] Finished image/future state processing loop.", "yellow")
-        
+
         traversability_success_count = 0
         all_poses_for_traversability = [] # Default empty list
 
@@ -931,7 +880,7 @@ class ListenRecordData:
                             mask_path, footprint_path = process_traversability_single(
                                 thermal_ts=current_thermal_ts,
                                 thermal_image_path=current_thermal_path,
-                                # dlio_path_msg=self.dlio_final_msg,  # <-- REMOVED per optimization plan
+                                #dlio_path_msg=self.dlio_final_msg,           # Pass the single final DLIO message
                                 all_past_thermal_ts=thermal_timestamps_list, # Pass the *complete* list
                                 all_poses_from_path=all_poses_for_traversability, # Pass the *complete* pose list
                                 output_footprints_dir=traversability_footprints_folder,
@@ -959,7 +908,89 @@ class ListenRecordData:
 
         cprint(f"[{just_the_name}] Finished traversability processing. Generated {traversability_success_count} sets.", 'cyan')
 
+        elevation_match_count = 0
+        thermal_timestamps_to_match = final_data['thermal_timestamps'] # Already populated
+        # Find indices where thermal timestamp is valid (not None and > 0)
+        valid_thermal_indices = [i for i, ts in enumerate(thermal_timestamps_to_match) if ts is not None and ts > 0.0]
 
+        if not valid_thermal_indices:
+            # Silently skip if no valid thermal timestamps to match
+            pass
+        else:
+            # Loop only through indices with valid thermal timestamps
+            for index in valid_thermal_indices:
+                current_thermal_ts = thermal_timestamps_to_match[index]
+
+                # --- Use cached BEV from thermal_data_raw (captured at processing time) ---
+                try:
+                    # Find the matching thermal_data_raw entry for this index
+                    if index < len(self.thermal_data_raw):
+                        bev_elev = self.thermal_data_raw[index].get('elevation_bev', None)
+                    else:
+                        bev_elev = None
+                    
+                    if bev_elev is not None and bev_elev.shape[0] > 0 and bev_elev.shape[1] > 0:
+                        elevation_match_count += 1
+                        matched_elev_ts = current_thermal_ts  # Use thermal timestamp as the matched timestamp
+                        
+                        # The BEV is already robot-relative from get_synced_elevation_bev
+                        rotated_grid = bev_elev.astype(np.float16)
+
+                        # --- 1. Save Robot-Relative Raw Elevation Data (.npy) ---
+                        elevation_raw_npy_path = os.path.join(elevation_raw_npy_folder, f'{index}_raw.npy')
+                        np.save(elevation_raw_npy_path, rotated_grid)
+                        # Store results for this index
+                        final_data['elevation_raw_paths'][index] = elevation_raw_npy_path
+                        final_data['elevation_timestamps'][index] = matched_elev_ts
+
+                        # --- 2. Create and Save 256x256 uint8 Image ---
+                        elevation_image_path = os.path.join(elevation_image_folder, f'{index}_image.png')
+                        # Use nested try-except for image generation/saving robustness
+                        try:
+                            # Save as-is without flip (matches reference behaviour)
+                            img_data_to_scale = rotated_grid.copy()
+
+                            valid_mask_img = ~np.isnan(img_data_to_scale)
+                            # Initialize float16 image (e.g., black)
+                            scaled_image_fl16 = np.zeros(img_data_to_scale.shape, dtype=np.float16)
+
+                            if np.any(valid_mask_img): # Process only if there's valid data
+                                min_val = np.nanmin(img_data_to_scale)
+                                max_val = np.nanmax(img_data_to_scale)
+
+                                if max_val > min_val: # Avoid division by zero
+                                    # Normalize valid data to 0-255
+                                    scaled_data = ((img_data_to_scale[valid_mask_img] - min_val) / (max_val - min_val)) * 255.0
+                                    scaled_image_fl16[valid_mask_img] = scaled_data.astype(np.float16)
+                                elif not np.isnan(min_val): # Handle flat ground case (single valid value)
+                                    scaled_image_fl16[valid_mask_img] = 128 # Assign mid-gray
+
+                            # Resize the scaled float16 image to 256x256
+                            resized_scaled_image = cv2.resize(scaled_image_fl16, (256, 256), interpolation=cv2.INTER_NEAREST)
+
+                            # Convert to uint8 before saving
+                            resized_scaled_image_uint8 = resized_scaled_image.astype(np.uint8)
+
+                            # Save the 256x256 image
+                            save_success_img = cv2.imwrite(elevation_image_path, resized_scaled_image_uint8)
+                            if save_success_img:
+                                final_data['elevation_image_paths'][index] = elevation_image_path # Store path only on success
+                            # else: Image save failed, path remains None
+
+                        except Exception:
+                            pass
+
+                except Exception as e:
+                    rospy.logerr(f"[{self.bag_name_prefix}] Elevation processing failed for index {index}: {e}")
+                    traceback.print_exc()
+                    final_data['elevation_raw_paths'][index] = None
+                    final_data['elevation_timestamps'][index] = None
+                    final_data['elevation_image_paths'][index] = None
+                    pass
+
+                # else: No suitable elevation match found, paths remain None
+
+        cprint(f"[{just_the_name}] Finished elevation processing. Matched {elevation_match_count}/{len(valid_thermal_indices)} valid thermal timestamps.", 'cyan')
         # --- Roughness Calc & Save ---
         # Process CURRENT IMU data accumulated in msg_data
         final_data['processed_gyro'] = self.data_collection.process_gyro_msg(msg_data)
@@ -1153,26 +1184,21 @@ if __name__ == '__main__':
          cprint(f"Error creating output directory '{save_data_path}': {e}", 'red', attrs=['bold'])
          exit(1)
 
-    # --- Safe Batch Multiprocessing (Limit 3) ---
-    import multiprocessing
-    
-    # Pack arguments for starmap
-    processing_tasks = []
-    for bag_filename in list_of_bags:
-        full_bag_path = os.path.join(bag_folder, bag_filename)
+    # --- Sequential Processing Loop ---
+    for i, bag_filename in enumerate(list_of_bags):
         just_the_name = os.path.splitext(bag_filename)[0]
-        processing_tasks.append((full_bag_path, save_data_path, just_the_name, sync_threshold))
+        full_bag_path = os.path.join(bag_folder, bag_filename)
 
-    cprint(f"Starting Safe Batch Processing: {len(processing_tasks)} bags with Pool(3)...", 'cyan', attrs=['bold'])
-
-    # maxtasksperchild=1 is CRITICAL for memory safety. 
-    # It kills the worker process after EACH bag, freeing all memory.
-    with multiprocessing.Pool(processes=3, maxtasksperchild=1) as pool:
+        cprint(f"\nProcessing bag {i+1}/{len(list_of_bags)}: {bag_filename}", 'yellow')
         try:
-            pool.starmap(threading_function, processing_tasks)
+            # Directly call the processing function for the current bag
+            threading_function(full_bag_path, save_data_path, just_the_name, sync_threshold)
+            cprint(f"--- Finished processing: {bag_filename}", 'green')
         except Exception as e:
-            cprint(f"Pool execution failed: {e}", 'red')
+            cprint(f"!!! ERROR processing {bag_filename}: {e}", 'red', attrs=['bold'])
             traceback.print_exc()
+            cprint(f"--- Skipping to next bag due to error ---\n", 'red')
+            continue # Move to the next bag file
 
     cprint('\nAll bag processing completed!', 'green', attrs=['bold'])
     exit(0)

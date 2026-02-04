@@ -4,7 +4,7 @@ import math
 import os
 import sys
 # sys.path.append('/home/harshr/NV_cahsor/CAHSOR-master')
-sys.path.append('/mnt/sbackup/Server_3/harshr/SBT/NV_cahsor/CAHSOR-master/')
+sys.path.append('/mnt/sbackup/Server_3/harshr/SBT_NV/SBT_master')
 from MPPI_CAHSOR.MPPIHelpers.utilities import utils as transformation_util
 
 class DataCollection:
